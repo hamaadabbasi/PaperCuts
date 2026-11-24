@@ -2,12 +2,12 @@
 # Reads a PDF and returns its text one page at a time,
 # so every piece of text can be traced back to a page number (needed for citations).
 
-import fitz     # Using PyMuPDF
+import pymupdf     # Using PyMuPDF
 
 
 def extract_pages(pdf_path):
     pages = []
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
 
     for i, page in enumerate(doc):
         text = page.get_text()
