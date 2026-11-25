@@ -2,13 +2,15 @@
 # Entry point for the PaperCuts backend.
 # It creates the server and defines the endpoints the frontend will call.
 
-import uuid
+import hashlib
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app.extraction import extract_findings
 from app.pdf_reader import extract_pages
 
 # Create the app. Run it with: uvicorn app.main:app --reload
@@ -25,6 +27,10 @@ app.add_middleware(
 # Folder where uploaded PDFs are saved (created if it does not exist yet)
 UPLOAD_DIR = Path("data/uploads")
 UPLOAD_DIR.mkdir(parents = True, exist_ok = True)
+
+# Folder where extracted findings are saved, so we only pay for each paper once
+FINDINGS_DIR = Path("data/findings")
+FINDINGS_DIR.mkdir(parents = True, exist_ok = True)
 
 # Uploaded papers stored in memory for now (lost on restart), will use MongoDB later
 papers = {}
@@ -67,17 +73,18 @@ async def upload_paper(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code = 400, detail = "Only PDF files are accepted.")
 
-    # Make a short random ID and save the PDF under that name
-    paper_id = str(uuid.uuid4())[:8]
+    # Make the ID from the file's contents, so the same PDF always gets the same ID
+    contents = await file.read()
+    paper_id = hashlib.sha256(contents).hexdigest()[:8]
     save_path = UPLOAD_DIR / f"{paper_id}.pdf"
-    save_path.write_bytes(await file.read())
+    save_path.write_bytes(contents)
 
-     # Read the text page by page (fails if the file isn't a real PDF)
+    # Read the text page by page (fails if the file isn't a real PDF)
     try:
         pages = extract_pages(str(save_path))
     except Exception:
-        save_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Could not read this PDF.")
+        save_path.unlink(missing_ok = True)
+        raise HTTPException(status_code = 400, detail = "Could not read this PDF.")
 
     # Keep track of the paper (and its text) so we can use it later
     papers[paper_id] = {
@@ -87,8 +94,7 @@ async def upload_paper(file: UploadFile = File(...)):
         "pages": pages,
     }
 
-    # TODO: chunk, embed, and extract findings (Path A and Path B)
-    
+    # TODO: chunk and embed the text (Path A)
     return {
         "id": paper_id,
         "filename": file.filename,
@@ -111,6 +117,29 @@ def get_paper_text(paper_id: str):
         raise HTTPException(status_code = 404, detail = "Paper not found.")
         
     return {"id": paper_id, "pages": paper["pages"]}
+
+
+@app.post("/api/papers/{paper_id}/extract")
+def extract_paper(paper_id: str, force: bool = False):
+    # Run the LLM extraction on one uploaded paper and save the findings
+    paper = papers.get(paper_id)
+    if paper is None:
+        raise HTTPException(status_code = 404, detail = "Paper not found.")
+
+    cache_file = FINDINGS_DIR / f"{paper_id}.json"
+
+    # Use the saved result if we already paid for this paper (unless force = true)
+    if cache_file.exists() and not force:
+        findings = json.loads(cache_file.read_text(encoding = "utf-8"))
+    else:
+        try:
+            findings = extract_findings(paper["pages"])
+        except Exception as e:
+            raise HTTPException(status_code = 500, detail = f"Extraction failed: {e}")
+        cache_file.write_text(json.dumps(findings, indent = 2), encoding = "utf-8")
+
+    paper["findings"] = findings
+    return findings
 
 
 @app.delete("/api/papers/{paper_id}")
