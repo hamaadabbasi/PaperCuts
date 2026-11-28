@@ -12,6 +12,8 @@ from pydantic import BaseModel
 
 from app.extraction import extract_findings
 from app.pdf_reader import extract_pages
+from app.rules import compare_results
+from app.verify import verify_findings
 
 # Create the app. Run it with: uvicorn app.main:app --reload
 app = FastAPI(title = "PaperCuts API")
@@ -82,6 +84,7 @@ async def upload_paper(file: UploadFile = File(...)):
     # Read the text page by page (fails if the file isn't a real PDF)
     try:
         pages = extract_pages(str(save_path))
+        
     except Exception:
         save_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Could not read this PDF.")
@@ -113,9 +116,10 @@ def list_papers():
 def get_paper_text(paper_id: str):
     # For testing: see the text the PDF reader pulled out, page by page
     paper = papers.get(paper_id)
+
     if paper is None:
         raise HTTPException(status_code = 404, detail = "Paper not found.")
-        
+
     return {"id": paper_id, "pages": paper["pages"]}
 
 
@@ -123,6 +127,7 @@ def get_paper_text(paper_id: str):
 def extract_paper(paper_id: str, force: bool = False):
     # Run the LLM extraction on one uploaded paper and save the findings
     paper = papers.get(paper_id)
+
     if paper is None:
         raise HTTPException(status_code = 404, detail = "Paper not found.")
 
@@ -131,21 +136,59 @@ def extract_paper(paper_id: str, force: bool = False):
     # Use the saved result if we already paid for this paper (unless force = true)
     if cache_file.exists() and not force:
         findings = json.loads(cache_file.read_text(encoding = "utf-8"))
+    
     else:
+
         try:
             findings = extract_findings(paper["pages"])
+
         except Exception as e:
             raise HTTPException(status_code = 500, detail = f"Extraction failed: {e}")
+        
         cache_file.write_text(json.dumps(findings, indent = 2), encoding = "utf-8")
+
+    # Check the findings against the real PDF text (also fixes page numbers)
+    findings["verification"] = verify_findings(findings, paper["pages"])
 
     paper["findings"] = findings
     return findings
+
+
+@app.get("/api/compare/results")
+def compare_two_results(paper_a: str, index_a: int, paper_b: str, index_b: int):
+    # For testing the rules: compare one result from paper A with one from paper B
+    # (index is the position in the paper's results list, starting at 0)
+    paper_1 = papers.get(paper_a)
+    paper_2 = papers.get(paper_b)
+
+    if paper_1 is None or paper_2 is None:
+        raise HTTPException(status_code = 404, detail = "Paper not found.")
+    
+    if "findings" not in paper_1 or "findings" not in paper_2:
+        raise HTTPException(status_code = 400, detail = "Run extract on both papers first.")
+
+    try:
+        result_a = paper_1["findings"]["results"][index_a]
+        result_b = paper_2["findings"]["results"][index_b]
+
+    except IndexError:
+        raise HTTPException(status_code = 404, detail = "No result at that index.")
+
+    task_a = paper_1["findings"].get("research_task", {}).get("value", "not reported")
+    task_b = paper_2["findings"].get("research_task", {}).get("value", "not reported")
+
+    return {
+        "result_a": result_a,
+        "result_b": result_b,
+        "comparison": compare_results(task_a, result_a, task_b, result_b),
+    }
 
 
 @app.delete("/api/papers/{paper_id}")
 def delete_paper(paper_id: str):
     # Take the paper out of the list (None if the ID isn't found)
     paper = papers.pop(paper_id, None)
+
     if paper is None:
         raise HTTPException(status_code = 404, detail = "Paper not found.")
 
