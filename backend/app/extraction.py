@@ -25,18 +25,23 @@ What to extract:
 - datasets: every dataset the paper uses.
 - methods: the models or approaches the paper tests or proposes.
 - evaluation_metrics: the metrics used to measure performance.
-- results: every score the paper reports, including numbers from tables. For each one, give the value, the metric, how that metric is defined (for example macro- or micro-averaged), the dataset, the method, and the evaluation settings (for example the train/test split).
+- results: every score the paper reports, including numbers from tables. For each one, give the value, the metric, how that metric is defined (for example how it was averaged or adjusted), the dataset, the method, and the evaluation settings (for example the sample, split, or conditions it was measured under).
 
 For every item, also give the section it appears in, the page number, and the exact passage it came from. Copy the passage word for word from the text, do not reword it.
 
 If the paper does not say something, write "not reported". Do not guess, and do not fill in anything from your own background knowledge.
 
 Extra rules:
-- Make one results entry per number. If one sentence reports three values, make three entries.
-- The passage must contain the value it is attached to.
-- Fill in the dataset, method, and evaluation settings only when the paper clearly states them for that result. Otherwise write "not reported". Do not assume.
+- Make one results entry per number. If one sentence reports several values, make one entry for each, and use evaluation_settings to say what makes them different (for example a different model size, setting, or condition).
+- Keep the units with the value (for example "9%", not "9").
+- The passage must contain the value and should mention the metric by name.
+- For the dataset, method, and evaluation settings, use details stated in the same sentence. If the setup for the same experiment is described elsewhere in the paper (for example how the data was split or which sample was used), you may use it and add the page in brackets, like "(page 7)". Otherwise write "not reported". Do not assume.
+- A dataset is the data the work uses or is tested on (for example a benchmark, a patient group, a survey sample, or a collection of images). Do not list model outputs, parts of a dataset, or results as datasets.
+- List each dataset and method once, as its own entry.
+- Each passage must be one continuous piece of text copied from the paper. Never edit it, combine pieces, or swap in a different number. If one sentence mentions several items (for example a list of metrics), use that same sentence for each of them.
+- Only list a dataset or method if some sentence in the paper names it. If you cannot find one, leave it out.
+- A result belongs to the method that produced it. If it comes from a baseline or comparison method, label it with that one, not with the paper's main method.
 - For the section, use the heading the passage actually appears under, such as Results or Methods.
-- List each dataset and method once, and make sure its passage mentions it by name.
 
 Return the JSON in this format:
 {
@@ -64,19 +69,21 @@ Return the JSON in this format:
 def extract_findings(pages):
     # Put a [Page N] marker before each page so the LLM can report page numbers
     paper_text = ""
+
     for p in pages:
         paper_text += f"\n[Page {p['page']}]\n{p['text']}\n"
-    
+
     response = client.chat.completions.create(
         model = MODEL,
-        
+
         # JSON mode: the model must return valid JSON
         response_format = {"type": "json_object"},
-        
+
         messages = [
             {"role": "user", "content": EXTRACTION_PROMPT + "\n\nPAPER TEXT:\n" + paper_text}
-        ],
+        ]
     )
+    
     raw = response.choices[0].message.content
 
     # Turn the text into a Python dictionary
